@@ -1,5 +1,4 @@
 # 1) Overwrite the script with the fixed version
-cat > /workspace/bentomlReCreation/benchmark_v1.py << 'PY'
 import asyncio
 import time
 import json
