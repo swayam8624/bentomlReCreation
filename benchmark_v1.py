@@ -136,7 +136,7 @@ class LoadGenerator:
         prompt = random.choice(self.prompts)
         start = time.time()
         payload = {
-            "model": "/workspace/bentomlReCreation/models/llama-8b",
+            "model": "/workspace/models/llama-8b",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 128,
             "temperature": 0.7
