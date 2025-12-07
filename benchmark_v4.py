@@ -190,7 +190,7 @@ class LoadGenerator:
         ttft = 0
         
         payload = {
-            "model": "/workspace/models/llama-8b",
+            "model": "/workspace/models/llama-8b-hf",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 128,
             "temperature": 0.7,
