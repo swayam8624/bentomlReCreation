@@ -624,12 +624,12 @@ def plot_gpu_telemetry_timeline(gpu_history: List[GPUState],
     print("✓ GPU telemetry timeline saved: gpu_telemetry_timeline.png")
     plt.close()
 
-def plot_comprehensive_analysis(results: List[LoadTestResult], 
-                                all_metrics: Dict[int, List[RequestMetric]],
-                                gpu_history: List[GPUState],
+def plot_comprehensive_analysis(results: List['LoadTestResult'], 
+                                all_metrics: Dict[int, List['RequestMetric']],
+                                gpu_history: List['GPUState'],
                                 peak_flops: Optional[float],
                                 saturation_analysis: Dict):
-    """Generate multi-panel analysis dashboard (streamlined version)"""
+    """Generate multi-panel analysis dashboard (Fixed Version)"""
     
     fig = plt.figure(figsize=(20, 12))
     gs = GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
@@ -686,20 +686,22 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
                    alpha=0.7)
     
     # Mark empirical saturation if found
-    if saturation_analysis['saturated'] and saturation_analysis['saturation_point']:
+    if saturation_analysis.get('saturated') and saturation_analysis.get('saturation_point'):
         sat_point = saturation_analysis['saturation_point']
-        sat_idx = concurrent_levels.index(sat_point['users'])
-        ax2.plot(sat_point['users'], aggregate_tps[sat_idx], 'r*', 
-                markersize=20, label=f"Empirical sat: {sat_point['users']} users")
+        # Only plot if the saturation point exists in our current x-axis
+        if sat_point['users'] in concurrent_levels:
+            sat_idx = concurrent_levels.index(sat_point['users'])
+            ax2.plot(sat_point['users'], aggregate_tps[sat_idx], 'r*', 
+                    markersize=20, label=f"Empirical sat: {sat_point['users']} users")
     
     ax2.set_xlabel('Concurrent Users', fontweight='bold')
     ax2.set_ylabel('Throughput (tokens/sec)', fontweight='bold')
-    ax2.set_title('Throughput Scaling with Mathematical Prediction', fontweight='bold', fontsize=12)
+    ax2.set_title('Throughput Scaling', fontweight='bold', fontsize=12)
     ax2.legend(fontsize=8)
     ax2.grid(True, alpha=0.3)
     
     # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 3: MFU Comparison (Top Right) - THE KEY METRIC
+    # PANEL 3: MFU Comparison (Top Right)
     # ═══════════════════════════════════════════════════════════════════════
     ax3 = fig.add_subplot(gs[0, 2])
     mfu_values = [r.real_mfu for r in results]
@@ -707,8 +709,9 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
               for m in mfu_values]
     
     bars = ax3.bar(concurrent_levels, mfu_values, color=colors, alpha=0.8, 
-                   edgecolor='black', linewidth=2)
+                   edgecolor='black', linewidth=2, width=max(concurrent_levels)*0.1) # Added width control
     
+    # Add labels on bars
     for bar, mfu in zip(bars, mfu_values):
         height = bar.get_height()
         ax3.text(bar.get_x() + bar.get_width()/2., height,
@@ -716,8 +719,7 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     
     ax3.set_xlabel('Concurrent Users', fontweight='bold')
     ax3.set_ylabel('Real GPU Utilization (MFU %)', fontweight='bold')
-    ax3.set_title('Model FLOPS Utilization (Real GPU Usage)', 
-                  fontweight='bold', fontsize=12)
+    ax3.set_title('Model FLOPS Utilization', fontweight='bold', fontsize=12)
     ax3.axhline(y=20, color='r', linestyle='--', alpha=0.5, label='Target: 20%')
     ax3.legend()
     ax3.grid(axis='y', alpha=0.3)
@@ -727,23 +729,21 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     # ═══════════════════════════════════════════════════════════════════════
     ax4 = fig.add_subplot(gs[1, 0])
     
-    if saturation_analysis['marginal_gains']:
+    if saturation_analysis.get('marginal_gains'):
         gains_x = [g['to_users'] for g in saturation_analysis['marginal_gains']]
         gains_y = [g['gain_pct'] for g in saturation_analysis['marginal_gains']]
         
         ax4.plot(gains_x, gains_y, 'o-', linewidth=3, markersize=10, color='#00FF41')
         ax4.fill_between(gains_x, gains_y, alpha=0.3, color='#00FF41')
         ax4.axhline(y=10, color='red', linestyle='--', linewidth=2, 
-                   label='Saturation Threshold (10%)', alpha=0.7)
+                   label='Threshold (10%)', alpha=0.7)
         
-        # Annotate each point
         for x, y in zip(gains_x, gains_y):
             ax4.text(x, y + 2, f'{y:.1f}%', ha='center', fontsize=9, fontweight='bold')
     
     ax4.set_xlabel('Concurrent Users', fontweight='bold')
     ax4.set_ylabel('Marginal Throughput Gain (%)', fontweight='bold')
-    ax4.set_title('Marginal Gains: When Does Scaling Stop Paying Off?', 
-                  fontweight='bold', fontsize=12)
+    ax4.set_title('Marginal Gains Analysis', fontweight='bold', fontsize=12)
     ax4.legend()
     ax4.grid(True, alpha=0.3)
     
@@ -775,227 +775,13 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     best_eff_idx = efficiency.index(max(efficiency))
     ax6.axvline(x=concurrent_levels[best_eff_idx], color='green', 
                linestyle='--', linewidth=2, 
-               label=f'Best: {concurrent_levels[best_eff_idx]} users', alpha=0.7)
+               label=f'Optimal: {concurrent_levels[best_eff_idx]} users', alpha=0.7)
     
     ax6.set_xlabel('Concurrent Users', fontweight='bold')
     ax6.set_ylabel('Throughput per User (tok/s)', fontweight='bold')
-    ax6.set_title('Efficiency Score: Optimal Concurrency', fontweight='bold', fontsize=12)
+    ax6.set_title('Efficiency Score', fontweight='bold', fontsize=12)
     ax6.legend()
     ax6.grid(True, alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 7: Request Timeline - Throughput Over Time (Bottom Left)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax7 = fig.add_subplot(gs[2, 0])
-    
-    for level, metrics in all_metrics.items():
-        successful = [m for m in metrics if m.success]
-        if not successful:
-            continue
-        base_time = min(m.start_time for m in successful)
-        start_times = [(m.start_time - base_time) for m in successful]
-        tps_values = [m.tokens_per_sec for m in successful]
-        
-        # Use lines instead of scatter
-        ax7.plot(start_times, tps_values, '-', alpha=0.7, linewidth=2, label=f'{level} users')
-    
-    ax7.set_xlabel('Request Start Time (s)', fontweight='bold')
-    ax7.set_ylabel('Tokens/sec (per request)', fontweight='bold')
-    ax7.set_title('Request Throughput Timeline', fontweight='bold', fontsize=12)
-    ax7.legend()
-    ax7.grid(True, alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 8: Success Rate (Bottom Center)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax8 = fig.add_subplot(gs[2, 1])
-    success_rates = [(r.successful_requests / r.total_requests * 100) for r in results]
-    
-    bars = ax8.bar(concurrent_levels, success_rates, color='#00FF41', 
-                   alpha=0.8, edgecolor='black', linewidth=2)
-    
-    for bar, rate in zip(bars, success_rates):
-        height = bar.get_height()
-        ax8.text(bar.get_x() + bar.get_width()/2., height,
-                f'{rate:.1f}%', ha='center', va='bottom', fontweight='bold')
-    
-    ax8.set_xlabel('Concurrent Users', fontweight='bold')
-    ax8.set_ylabel('Success Rate (%)', fontweight='bold')
-    ax8.set_title('Request Success Rate', fontweight='bold', fontsize=12)
-    ax8.set_ylim(0, 105)
-    ax8.axhline(y=99, color='r', linestyle='--', alpha=0.5, label='Target: 99%')
-    ax8.legend()
-    ax8.grid(axis='y', alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 9: Summary Table (Bottom Right)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax9 = fig.add_subplot(gs[2, 2])
-    ax9.axis('off')
-    
-    table_data = [['Metric'] + [f'{u} Users' for u in concurrent_levels]]
-    
-    metrics_to_show = [
-        ('TTFT P95 (ms)', [f"{r.p95_ttft_ms:.0f}" for r in results]),
-        ('Latency P99 (ms)', [f"{r.p99_latency_ms:.0f}" for r in results]),
-        ('Throughput (tok/s)', [f"{r.aggregate_tokens_per_sec:.0f}" for r in results]),
-        ('MFU (%)', [f"{r.real_mfu:.1f}" for r in results]),
-        ('tok/W', [f"{r.tokens_per_watt:.2f}" for r in results]),
-    ]
-    
-    for metric_name, values in metrics_to_show:
-        row = [metric_name] + values
-        table_data.append(row)
-    
-    col_widths = [0.3] + [0.7 / len(concurrent_levels)] * len(concurrent_levels)
-    table = ax9.table(cellText=table_data, cellLoc='center', loc='center',
-                     colWidths=col_widths)
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 2)
-    
-    # Style header row
-    for i in range(len(concurrent_levels) + 1):
-        table[(0, i)].set_facecolor('#4A90E2')
-        table[(0, i)].set_text_props(weight='bold', color='white')
-    
-    # Alternate row colors
-    for i in range(1, len(table_data)):
-        for j in range(len(concurrent_levels) + 1):
-            if i % 2 == 0:
-                table[(i, j)].set_facecolor('#f0f0f0')
-    
-    ax9.set_title('Performance Summary', fontweight='bold', fontsize=12, pad=20)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # OVERALL TITLE
-    # ═══════════════════════════════════════════════════════════════════════
-    gpu_name = "GPU"
-    if gpu_history:
-        gpu_name = "NVIDIA A40"  # Could extract from monitor
-    
-    fig.suptitle(f'LLM Inference Benchmark: Multi-Load Analysis with Saturation Detection\n'
-                f'Model: Llama-8B | Hardware: {gpu_name}',
-                fontsize=16, fontweight='bold', y=0.98)
-    
-    plt.savefig('comprehensive_benchmark.png', dpi=300, bbox_inches='tight')
-    print("✓ Comprehensive analysis saved: comprehensive_benchmark.png")
-    plt.close()
-    
-    concurrent_levels = [r.concurrent_users for r in results]
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 1: TTFT Comparison (Top Left)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax1 = fig.add_subplot(gs[0, 0])
-    ttft_avg = [r.avg_ttft_ms for r in results]
-    ttft_p95 = [r.p95_ttft_ms for r in results]
-    ttft_p99 = [r.p99_ttft_ms for r in results]
-    
-    x = np.arange(len(concurrent_levels))
-    width = 0.25
-    
-    ax1.bar(x - width, ttft_avg, width, label='Avg TTFT', color='#00FF41', alpha=0.8)
-    ax1.bar(x, ttft_p95, width, label='P95 TTFT', color='#FFA500', alpha=0.8)
-    ax1.bar(x + width, ttft_p99, width, label='P99 TTFT', color='#FF6B35', alpha=0.8)
-    
-    ax1.set_xlabel('Concurrent Users', fontweight='bold')
-    ax1.set_ylabel('Time to First Token (ms)', fontweight='bold')
-    ax1.set_title('TTFT Latency by Concurrency', fontweight='bold', fontsize=12)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(concurrent_levels)
-    ax1.legend()
-    ax1.grid(axis='y', alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 2: Throughput Scaling (Top Center)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax2 = fig.add_subplot(gs[0, 1])
-    aggregate_tps = [r.aggregate_tokens_per_sec for r in results]
-    per_request_tps = [r.avg_request_tokens_per_sec for r in results]
-    
-    ax2.plot(concurrent_levels, aggregate_tps, 'o-', linewidth=3, 
-             markersize=10, label='Aggregate tok/s', color='#00FF41')
-    ax2.plot(concurrent_levels, per_request_tps, 's--', linewidth=2, 
-             markersize=8, label='Per-Request tok/s', color='#4A90E2')
-    
-    ax2.set_xlabel('Concurrent Users', fontweight='bold')
-    ax2.set_ylabel('Throughput (tokens/sec)', fontweight='bold')
-    ax2.set_title('Throughput Scaling', fontweight='bold', fontsize=12)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 3: MFU Comparison (Top Right) - THE KEY METRIC
-    # ═══════════════════════════════════════════════════════════════════════
-    ax3 = fig.add_subplot(gs[0, 2])
-    mfu_values = [r.real_mfu for r in results]
-    colors = ['#00FF41' if m > 15 else '#FFA500' if m > 10 else '#FF6B35' 
-              for m in mfu_values]
-    
-    bars = ax3.bar(concurrent_levels, mfu_values, color=colors, alpha=0.8, 
-                   edgecolor='black', linewidth=2)
-    
-    for bar, mfu in zip(bars, mfu_values):
-        height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{mfu:.1f}%', ha='center', va='bottom', fontweight='bold')
-    
-    ax3.set_xlabel('Concurrent Users', fontweight='bold')
-    ax3.set_ylabel('Real GPU Utilization (MFU %)', fontweight='bold')
-    ax3.set_title('Model FLOPS Utilization (Real GPU Usage)', 
-                  fontweight='bold', fontsize=12)
-    ax3.axhline(y=20, color='r', linestyle='--', alpha=0.5, label='Target: 20%')
-    ax3.legend()
-    ax3.grid(axis='y', alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 4: Latency Distribution (Middle Left)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax4 = fig.add_subplot(gs[1, 0])
-    
-    for level, metrics in all_metrics.items():
-        successful = [m for m in metrics if m.success]
-        latencies = [m.total_latency_ms for m in successful]
-        ax4.hist(latencies, bins=30, alpha=0.5, label=f'{level} users', 
-                edgecolor='black')
-    
-    ax4.set_xlabel('Total Latency (ms)', fontweight='bold')
-    ax4.set_ylabel('Frequency', fontweight='bold')
-    ax4.set_title('Latency Distribution', fontweight='bold', fontsize=12)
-    ax4.legend()
-    ax4.grid(axis='y', alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 5: Tokens/Watt Efficiency (Middle Center)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax5 = fig.add_subplot(gs[1, 1])
-    tok_per_watt = [r.tokens_per_watt for r in results]
-    
-    ax5.plot(concurrent_levels, tok_per_watt, 'o-', linewidth=3, 
-             markersize=10, color='#00FF41')
-    ax5.fill_between(concurrent_levels, tok_per_watt, alpha=0.3, color='#00FF41')
-    
-    ax5.set_xlabel('Concurrent Users', fontweight='bold')
-    ax5.set_ylabel('Tokens per Watt', fontweight='bold')
-    ax5.set_title('Energy Efficiency', fontweight='bold', fontsize=12)
-    ax5.grid(True, alpha=0.3)
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 6: Power Draw Timeline (Middle Right)
-    # ═══════════════════════════════════════════════════════════════════════
-    ax6 = fig.add_subplot(gs[1, 2])
-    if gpu_history:
-        timestamps = [s.timestamp - gpu_history[0].timestamp for s in gpu_history]
-        power = [s.power_draw_w for s in gpu_history]
-        
-        ax6.plot(timestamps, power, linewidth=2, color='#FF6B35')
-        ax6.fill_between(timestamps, power, alpha=0.3, color='#FF6B35')
-        
-        ax6.set_xlabel('Time (seconds)', fontweight='bold')
-        ax6.set_ylabel('Power Draw (W)', fontweight='bold')
-        ax6.set_title('Power Consumption Over Time', fontweight='bold', fontsize=12)
-        ax6.grid(True, alpha=0.3)
     
     # ═══════════════════════════════════════════════════════════════════════
     # PANEL 7: Request Timeline (Bottom Left)
@@ -1010,11 +796,11 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
         start_times = [(m.start_time - base_time) for m in successful]
         tps_values = [m.tokens_per_sec for m in successful]
         
-        ax7.scatter(start_times, tps_values, alpha=0.6, label=f'{level} users', s=50)
+        ax7.plot(start_times, tps_values, '-', alpha=0.7, linewidth=2, label=f'{level} users')
     
-    ax7.set_xlabel('Request Start Time (s)', fontweight='bold')
+    ax7.set_xlabel('Test Duration (s)', fontweight='bold')
     ax7.set_ylabel('Tokens/sec (per request)', fontweight='bold')
-    ax7.set_title('Request Throughput Timeline', fontweight='bold', fontsize=12)
+    ax7.set_title('Throughput Stability', fontweight='bold', fontsize=12)
     ax7.legend()
     ax7.grid(True, alpha=0.3)
     
@@ -1025,7 +811,7 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     success_rates = [(r.successful_requests / r.total_requests * 100) for r in results]
     
     bars = ax8.bar(concurrent_levels, success_rates, color='#00FF41', 
-                   alpha=0.8, edgecolor='black', linewidth=2)
+                   alpha=0.8, edgecolor='black', linewidth=2, width=max(concurrent_levels)*0.1)
     
     for bar, rate in zip(bars, success_rates):
         height = bar.get_height()
@@ -1046,7 +832,9 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     ax9 = fig.add_subplot(gs[2, 2])
     ax9.axis('off')
     
-    table_data = [['Metric', '10 Users', '50 Users', '100 Users']]
+    # Dynamically create header based on actual users run
+    header_row = ['Metric'] + [f'{u} Users' for u in concurrent_levels]
+    table_data = [header_row]
     
     metrics_to_show = [
         ('TTFT P95 (ms)', [f"{r.p95_ttft_ms:.0f}" for r in results]),
@@ -1060,31 +848,36 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
         row = [metric_name] + values
         table_data.append(row)
     
+    # Dynamically calculate column widths
+    col_widths = [0.3] + [0.7 / len(concurrent_levels)] * len(concurrent_levels)
+    
     table = ax9.table(cellText=table_data, cellLoc='center', loc='center',
-                     colWidths=[0.3, 0.23, 0.23, 0.23])
+                     colWidths=col_widths)
     table.auto_set_font_size(False)
     table.set_fontsize(9)
     table.scale(1, 2)
     
     # Style header row
-    for i in range(4):
+    for i in range(len(header_row)):
         table[(0, i)].set_facecolor('#4A90E2')
         table[(0, i)].set_text_props(weight='bold', color='white')
     
     # Alternate row colors
     for i in range(1, len(table_data)):
-        for j in range(4):
+        for j in range(len(header_row)):
             if i % 2 == 0:
                 table[(i, j)].set_facecolor('#f0f0f0')
     
     ax9.set_title('Performance Summary', fontweight='bold', fontsize=12, pad=20)
     
     # ═══════════════════════════════════════════════════════════════════════
-    # OVERALL TITLE
+    # FINAL SAVE
     # ═══════════════════════════════════════════════════════════════════════
     gpu_name = "GPU"
     if gpu_history and hasattr(gpu_history[0], 'gpu_name'):
         gpu_name = gpu_history[0].gpu_name
+    elif gpu_history:
+         gpu_name = "NVIDIA A40" # Fallback if attribute missing
     
     fig.suptitle(f'LLM Inference Benchmark: Multi-Load Analysis\n'
                 f'Model: Llama-8B | Hardware: {gpu_name}',
@@ -1092,7 +885,8 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     
     plt.savefig('comprehensive_benchmark.png', dpi=300, bbox_inches='tight')
     print("✓ Comprehensive analysis saved: comprehensive_benchmark.png")
-    plt.show()
+    plt.show() # Safe to call show after save
+    plt.close()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR
