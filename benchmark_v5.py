@@ -17,6 +17,7 @@ try:
     import numpy as np
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
+    from scipy.optimize import curve_fit
     from pynvml import (
         nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetUtilizationRates,
         nvmlDeviceGetMemoryInfo, nvmlDeviceGetPowerUsage, nvmlDeviceGetName,
@@ -25,7 +26,7 @@ try:
     )
 except ImportError as e:
     print(f"FATAL: Missing dependency: {e}")
-    print("Run: pip install aiohttp numpy nvidia-ml-py matplotlib")
+    print("Run: pip install aiohttp numpy nvidia-ml-py matplotlib scipy")
     sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -361,19 +362,26 @@ def print_result(result: LoadTestResult):
 # VISUALIZATION
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
-# SATURATION ANALYSIS
+# SATURATION ANALYSIS WITH CURVE FITTING
 # ═══════════════════════════════════════════════════════════════════════════
 def calculate_saturation_point(results: List[LoadTestResult]) -> Dict:
     """
-    Calculate throughput saturation point using marginal gains analysis.
-    Returns the point where adding more concurrent users yields < 10% throughput gain.
+    Calculate throughput saturation point using:
+    1. Marginal gains analysis (empirical)
+    2. Curve fitting to predict asymptotic limit (mathematical)
     """
     if len(results) < 2:
         return {"saturated": False, "saturation_point": None}
     
     throughputs = [(r.concurrent_users, r.aggregate_tokens_per_sec) for r in results]
-    throughputs.sort(key=lambda x: x[0])  # Sort by concurrent users
+    throughputs.sort(key=lambda x: x[0])
     
+    users = np.array([t[0] for t in throughputs])
+    tps = np.array([t[1] for t in throughputs])
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # METHOD 1: Marginal Gains (Empirical)
+    # ═══════════════════════════════════════════════════════════════════════
     marginal_gains = []
     for i in range(1, len(throughputs)):
         prev_users, prev_tps = throughputs[i-1]
@@ -392,32 +400,123 @@ def calculate_saturation_point(results: List[LoadTestResult]) -> Dict:
             "gain_per_user": marginal_gain_per_user
         })
     
-    # Find saturation point (< 10% gain threshold)
+    # Find empirical saturation (< 10% gain)
     saturation_threshold = 10.0
-    saturation_point = None
+    empirical_saturation = None
     
     for i, gain in enumerate(marginal_gains):
         if gain["gain_pct"] < saturation_threshold:
-            saturation_point = {
+            empirical_saturation = {
                 "users": gain["to_users"],
                 "throughput": throughputs[i+1][1],
                 "marginal_gain_pct": gain["gain_pct"],
-                "message": f"Saturation at {gain['to_users']} users (only {gain['gain_pct']:.1f}% gain from {gain['from_users']} users)"
+                "message": f"Empirical saturation at {gain['to_users']} users"
             }
             break
     
-    # Calculate efficiency score (throughput / concurrent_users)
+    # ═══════════════════════════════════════════════════════════════════════
+    # METHOD 2: Curve Fitting (Mathematical Prediction)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Fit Michaelis-Menten / Saturation curve: T(u) = T_max * u / (K + u)
+    # Where: T_max = asymptotic throughput, K = half-saturation constant
+    
+    def saturation_curve(u, T_max, K):
+        """Michaelis-Menten saturation model"""
+        return T_max * u / (K + u)
+    
+    try:
+        from scipy.optimize import curve_fit
+        
+        # Initial guess: T_max = 2x current max, K = median users
+        initial_guess = [tps[-1] * 2, np.median(users)]
+        
+        # Fit curve
+        params, covariance = curve_fit(saturation_curve, users, tps, 
+                                      p0=initial_guess, maxfev=10000)
+        T_max_predicted, K = params
+        
+        # Calculate confidence
+        residuals = tps - saturation_curve(users, *params)
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((tps - np.mean(tps))**2)
+        r_squared = 1 - (ss_res / ss_tot)
+        
+        # Predict saturation point: where we reach 95% of T_max
+        # T(u) = 0.95 * T_max → u = 19 * K (from algebra)
+        predicted_saturation_users = int(19 * K)
+        predicted_saturation_tps = saturation_curve(predicted_saturation_users, *params)
+        
+        # Calculate current % of theoretical max
+        current_max_tps = tps[-1]
+        current_pct_of_max = (current_max_tps / T_max_predicted) * 100
+        
+        curve_fit_result = {
+            "T_max": T_max_predicted,
+            "K": K,
+            "r_squared": r_squared,
+            "predicted_saturation_users": predicted_saturation_users,
+            "predicted_saturation_tps": predicted_saturation_tps,
+            "current_pct_of_max": current_pct_of_max,
+            "fit_quality": "Excellent" if r_squared > 0.95 else "Good" if r_squared > 0.85 else "Fair"
+        }
+        
+        # Generate prediction curve for plotting
+        u_pred = np.linspace(users[0], predicted_saturation_users * 1.5, 100)
+        tps_pred = saturation_curve(u_pred, *params)
+        curve_fit_result["prediction_curve"] = (u_pred, tps_pred)
+        
+    except Exception as e:
+        print(f"  ⚠ Curve fitting failed: {e}")
+        curve_fit_result = None
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # METHOD 3: Diminishing Returns Analysis
+    # ═══════════════════════════════════════════════════════════════════════
+    # Calculate marginal throughput per additional user
+    marginal_tps_per_user = np.diff(tps) / np.diff(users)
+    
+    # Find where marginal gain drops below threshold (e.g., 10 tok/s per user)
+    marginal_threshold = 10.0  # tok/s per additional user
+    diminishing_returns_point = None
+    
+    for i, marginal in enumerate(marginal_tps_per_user):
+        if marginal < marginal_threshold:
+            diminishing_returns_point = {
+                "users": int(users[i+1]),
+                "marginal_tps_per_user": marginal,
+                "message": f"Diminishing returns at {int(users[i+1])} users"
+            }
+            break
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # FINAL RECOMMENDATION
+    # ═══════════════════════════════════════════════════════════════════════
     efficiency_scores = [(r.concurrent_users, r.aggregate_tokens_per_sec / r.concurrent_users) 
                          for r in results]
     best_efficiency = max(efficiency_scores, key=lambda x: x[1])
     
+    # Determine if saturated
+    saturated = empirical_saturation is not None
+    
+    # If curve fit succeeded and predicts saturation beyond our test range
+    if curve_fit_result and curve_fit_result['current_pct_of_max'] < 90:
+        recommendation = f"Test up to {curve_fit_result['predicted_saturation_users']} users to reach theoretical max"
+    elif curve_fit_result and curve_fit_result['current_pct_of_max'] >= 90:
+        recommendation = f"Near saturation ({curve_fit_result['current_pct_of_max']:.1f}% of predicted max)"
+        saturated = True
+    else:
+        recommendation = "Increase test range to find saturation point"
+    
     return {
-        "saturated": saturation_point is not None,
-        "saturation_point": saturation_point,
+        "saturated": saturated,
+        "saturation_point": empirical_saturation,
         "marginal_gains": marginal_gains,
         "best_efficiency_users": best_efficiency[0],
         "best_efficiency_tps_per_user": best_efficiency[1],
-        "throughput_curve": throughputs
+        "throughput_curve": throughputs,
+        "curve_fit": curve_fit_result,
+        "diminishing_returns": diminishing_returns_point,
+        "recommendation": recommendation
     }
 
 def plot_gpu_telemetry_timeline(gpu_history: List[GPUState], 
@@ -570,19 +669,33 @@ def plot_comprehensive_analysis(results: List[LoadTestResult],
     ax2.plot(concurrent_levels, per_request_tps, 's-', linewidth=2, 
              markersize=8, label='Per-Request tok/s', color='#4A90E2')
     
-    # Mark saturation point
-    if saturation_analysis['saturated']:
+    # Plot prediction curve if available
+    if saturation_analysis.get('curve_fit'):
+        cf = saturation_analysis['curve_fit']
+        u_pred, tps_pred = cf['prediction_curve']
+        ax2.plot(u_pred, tps_pred, '--', linewidth=2, color='red', 
+                alpha=0.7, label=f"Predicted curve (R²={cf['r_squared']:.3f})")
+        
+        # Mark theoretical max
+        ax2.axhline(y=cf['T_max'], color='orange', linestyle=':', linewidth=2,
+                   label=f"Theoretical max: {cf['T_max']:.0f} tok/s", alpha=0.7)
+        
+        # Mark predicted saturation
+        ax2.axvline(x=cf['predicted_saturation_users'], color='red', linestyle='--', 
+                   linewidth=2, label=f"95% max at ~{cf['predicted_saturation_users']} users", 
+                   alpha=0.7)
+    
+    # Mark empirical saturation if found
+    if saturation_analysis['saturated'] and saturation_analysis['saturation_point']:
         sat_point = saturation_analysis['saturation_point']
         sat_idx = concurrent_levels.index(sat_point['users'])
-        ax2.axvline(x=sat_point['users'], color='red', linestyle='--', linewidth=2,
-                   label=f"Saturation: {sat_point['users']} users", alpha=0.7)
         ax2.plot(sat_point['users'], aggregate_tps[sat_idx], 'r*', 
-                markersize=20, label=f"{sat_point['marginal_gain_pct']:.1f}% gain only")
+                markersize=20, label=f"Empirical sat: {sat_point['users']} users")
     
     ax2.set_xlabel('Concurrent Users', fontweight='bold')
     ax2.set_ylabel('Throughput (tokens/sec)', fontweight='bold')
-    ax2.set_title('Throughput Scaling & Saturation Point', fontweight='bold', fontsize=12)
-    ax2.legend()
+    ax2.set_title('Throughput Scaling with Mathematical Prediction', fontweight='bold', fontsize=12)
+    ax2.legend(fontsize=8)
     ax2.grid(True, alpha=0.3)
     
     # ═══════════════════════════════════════════════════════════════════════
@@ -1069,31 +1182,61 @@ async def main():
         print("║              SATURATION ANALYSIS                              ║")
         print("╠═══════════════════════════════════════════════════════════════╣")
         
-        if saturation_analysis['saturated']:
+        # Show curve fit prediction first
+        if saturation_analysis.get('curve_fit'):
+            cf = saturation_analysis['curve_fit']
+            print(f"║ 📊 MATHEMATICAL PREDICTION (Michaelis-Menten Curve Fit)      ║")
+            print(f"║   Theoretical Max: {cf['T_max']:.1f} tok/s                               ║")
+            print(f"║   Half-Saturation (K): {cf['K']:.1f} users                              ║")
+            print(f"║   Fit Quality: {cf['fit_quality']} (R² = {cf['r_squared']:.3f})                         ║")
+            print(f"║   Current Status: {cf['current_pct_of_max']:.1f}% of theoretical max                ║")
+            print(f"║                                                               ║")
+            print(f"║   Predicted 95% Saturation: {cf['predicted_saturation_users']} users                     ║")
+            print(f"║   Expected Throughput: {cf['predicted_saturation_tps']:.1f} tok/s                       ║")
+            print(f"║                                                               ║")
+            
+            if cf['current_pct_of_max'] < 80:
+                print(f"║ 💡 RECOMMENDATION: System has significant headroom.           ║")
+                print(f"║   Test up to {cf['predicted_saturation_users']} users to approach theoretical limit. ║")
+            elif cf['current_pct_of_max'] < 95:
+                print(f"║ 💡 RECOMMENDATION: Approaching saturation.                    ║")
+                print(f"║   Test {cf['predicted_saturation_users']} users to confirm model prediction.         ║")
+            else:
+                print(f"║ ✓ NEAR THEORETICAL MAX: {cf['current_pct_of_max']:.1f}% of predicted capacity.      ║")
+                print(f"║   Further scaling will yield minimal gains.                  ║")
+        
+        print(f"╟───────────────────────────────────────────────────────────────╢")
+        
+        if saturation_analysis['saturated'] and saturation_analysis['saturation_point']:
             sat = saturation_analysis['saturation_point']
-            print(f"║ ⚠ SATURATION DETECTED                                         ║")
+            print(f"║ ⚠ EMPIRICAL SATURATION DETECTED                               ║")
             print(f"║   Point: {sat['users']} concurrent users                                  ║")
             print(f"║   Throughput: {sat['throughput']:.1f} tok/s                              ║")
             print(f"║   Marginal Gain: {sat['marginal_gain_pct']:.1f}% (< 10% threshold)                 ║")
             print(f"║                                                               ║")
-            print(f"║ 💡 RECOMMENDATION:                                            ║")
+            print(f"║ 💡 OPERATIONAL RECOMMENDATION:                                ║")
             print(f"║   Optimal concurrency: {saturation_analysis['best_efficiency_users']} users                              ║")
             print(f"║   (Best throughput per user: {saturation_analysis['best_efficiency_tps_per_user']:.1f} tok/s/user)        ║")
-            print(f"║                                                               ║")
-            print(f"║   Adding more users beyond {sat['users']} yields diminishing returns.    ║")
         else:
-            print(f"║ ✓ NO SATURATION DETECTED                                      ║")
-            print(f"║   System has not reached throughput ceiling yet.              ║")
-            print(f"║   Consider testing higher concurrency levels.                 ║")
+            print(f"║ ✓ NO EMPIRICAL SATURATION (< 10% gain threshold)             ║")
+            print(f"║   All test points show healthy scaling.                      ║")
             print(f"║                                                               ║")
             best_eff = saturation_analysis['best_efficiency_users']
-            print(f"║ 💡 CURRENT BEST: {best_eff} users                                        ║")
-            print(f"║   (Highest throughput per user)                               ║")
+            print(f"║ 💡 CURRENT BEST EFFICIENCY: {best_eff} users                             ║")
+            print(f"║   (Highest throughput per user: {saturation_analysis['best_efficiency_tps_per_user']:.1f} tok/s/user)     ║")
         
         print("╟───────────────────────────────────────────────────────────────╢")
         print("║ MARGINAL GAINS BREAKDOWN:                                     ║")
         for gain in saturation_analysis['marginal_gains']:
-            print(f"║   {gain['from_users']:3d} → {gain['to_users']:3d} users: +{gain['gain_pct']:5.1f}% (+{gain['tps_gain']:5.0f} tok/s)          ║")
+            status = " ⚠" if gain['gain_pct'] < 10 else ""
+            print(f"║   {gain['from_users']:3d} → {gain['to_users']:3d} users: +{gain['gain_pct']:5.1f}% (+{gain['tps_gain']:5.0f} tok/s){status}         ║")
+        
+        if saturation_analysis.get('diminishing_returns'):
+            dr = saturation_analysis['diminishing_returns']
+            print(f"╟───────────────────────────────────────────────────────────────╢")
+            print(f"║ ⚠ DIMINISHING RETURNS DETECTED:                               ║")
+            print(f"║   At {dr['users']} users: {dr['marginal_tps_per_user']:.1f} tok/s per additional user          ║")
+            print(f"║   (Below {10.0} tok/s threshold)                                ║")
         
         print("╚═══════════════════════════════════════════════════════════════╝\n")
         
