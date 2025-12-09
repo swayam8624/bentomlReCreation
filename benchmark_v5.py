@@ -658,47 +658,102 @@ def plot_comprehensive_analysis(results: List['LoadTestResult'],
     ax1.grid(True, alpha=0.3)
     
     # ═══════════════════════════════════════════════════════════════════════
-    # PANEL 2: Throughput Scaling with Saturation Point (Top Center)
+    # PANEL 2: Throughput Scaling with Mathematical Prediction (Top Center)
     # ═══════════════════════════════════════════════════════════════════════
     ax2 = fig.add_subplot(gs[0, 1])
     aggregate_tps = [r.aggregate_tokens_per_sec for r in results]
     per_request_tps = [r.avg_request_tokens_per_sec for r in results]
-    
-    ax2.plot(concurrent_levels, aggregate_tps, 'o-', linewidth=3, 
-             markersize=10, label='Aggregate tok/s', color='#00FF41')
-    ax2.plot(concurrent_levels, per_request_tps, 's-', linewidth=2, 
-             markersize=8, label='Per-Request tok/s', color='#4A90E2')
-    
+
+    # Plot actual measurements
+    ax2.plot(concurrent_levels, aggregate_tps, 'o', markersize=12, 
+            label='Measured Aggregate', color='#00FF41', zorder=5)
+    ax2.plot(concurrent_levels, per_request_tps, 's', markersize=10,
+            label='Measured Per-Request', color='#4A90E2', zorder=5)
+
     # Plot prediction curve if available
     if saturation_analysis.get('curve_fit'):
         cf = saturation_analysis['curve_fit']
         u_pred, tps_pred = cf['prediction_curve']
-        ax2.plot(u_pred, tps_pred, '--', linewidth=2, color='red', 
-                alpha=0.7, label=f"Predicted curve (R²={cf['r_squared']:.3f})")
         
-        # Mark theoretical max
-        ax2.axhline(y=cf['T_max'], color='orange', linestyle=':', linewidth=2,
-                   label=f"Theoretical max: {cf['T_max']:.0f} tok/s", alpha=0.7)
+        # Extend prediction range for better visualization
+        u_extended = np.linspace(concurrent_levels[0], 
+                                cf['predicted_saturation_users'] * 1.3, 200)
         
-        # Mark predicted saturation
+        def saturation_curve(u, T_max, K):
+            return T_max * u / (K + u)
+        
+        tps_extended = saturation_curve(u_extended, cf['T_max'], cf['K'])
+        
+        # Plot smooth prediction curve
+        ax2.plot(u_extended, tps_extended, '-', linewidth=3, color='#FF6B35', 
+                alpha=0.8, label=f"Mathematical Model (R²={cf['r_squared']:.3f})", zorder=3)
+        
+        # Shade confidence region (theoretical ±5%)
+        tps_upper = tps_extended * 1.05
+        tps_lower = tps_extended * 0.95
+        ax2.fill_between(u_extended, tps_lower, tps_upper, color='#FF6B35', 
+                        alpha=0.15, label='95% Confidence', zorder=2)
+        
+        # Mark theoretical maximum with horizontal line
+        ax2.axhline(y=cf['T_max'], color='red', linestyle='--', linewidth=2,
+                label=f"Theoretical Max: {cf['T_max']:.0f} tok/s", alpha=0.7, zorder=4)
+        
+        # Mark 95% saturation point
+        sat_95_tps = cf['T_max'] * 0.95
+        ax2.axhline(y=sat_95_tps, color='orange', linestyle=':', linewidth=2,
+                label=f"95% Saturation: {sat_95_tps:.0f} tok/s", alpha=0.6, zorder=4)
+        
+        # Vertical line at predicted saturation users
         ax2.axvline(x=cf['predicted_saturation_users'], color='red', linestyle='--', 
-                   linewidth=2, label=f"95% max at ~{cf['predicted_saturation_users']} users", 
-                   alpha=0.7)
-    
-    # Mark empirical saturation if found
-    if saturation_analysis.get('saturated') and saturation_analysis.get('saturation_point'):
+                linewidth=2, alpha=0.5, zorder=4)
+        
+        # Annotate predicted saturation point
+        ax2.annotate(f"95% Max\n~{cf['predicted_saturation_users']} users", 
+                    xy=(cf['predicted_saturation_users'], sat_95_tps),
+                    xytext=(cf['predicted_saturation_users'] * 0.7, sat_95_tps * 1.08),
+                    fontsize=10, fontweight='bold', color='red',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.7),
+                    arrowprops=dict(arrowstyle='->', color='red', lw=2))
+        
+        # Annotate current status
+        current_max = max(aggregate_tps)
+        current_users = concurrent_levels[aggregate_tps.index(current_max)]
+        ax2.annotate(f"Current:\n{cf['current_pct_of_max']:.1f}% of max", 
+                    xy=(current_users, current_max),
+                    xytext=(current_users * 1.3, current_max * 0.85),
+                    fontsize=10, fontweight='bold', color='#00FF41',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9),
+                    arrowprops=dict(arrowstyle='->', color='#00FF41', lw=2))
+
+    # Mark empirical saturation if found (fallback if no curve fit)
+    elif saturation_analysis['saturated'] and saturation_analysis['saturation_point']:
         sat_point = saturation_analysis['saturation_point']
-        # Only plot if the saturation point exists in our current x-axis
-        if sat_point['users'] in concurrent_levels:
-            sat_idx = concurrent_levels.index(sat_point['users'])
-            ax2.plot(sat_point['users'], aggregate_tps[sat_idx], 'r*', 
-                    markersize=20, label=f"Empirical sat: {sat_point['users']} users")
-    
-    ax2.set_xlabel('Concurrent Users', fontweight='bold')
-    ax2.set_ylabel('Throughput (tokens/sec)', fontweight='bold')
-    ax2.set_title('Throughput Scaling', fontweight='bold', fontsize=12)
-    ax2.legend(fontsize=8)
-    ax2.grid(True, alpha=0.3)
+        sat_idx = concurrent_levels.index(sat_point['users'])
+        ax2.plot(sat_point['users'], aggregate_tps[sat_idx], '*', 
+                markersize=25, color='red', label=f"Empirical Saturation", zorder=6)
+
+    ax2.set_xlabel('Concurrent Users', fontweight='bold', fontsize=12)
+    ax2.set_ylabel('Throughput (tokens/sec)', fontweight='bold', fontsize=12)
+    ax2.set_title('Throughput Scalability with Saturation Prediction', 
+                fontweight='bold', fontsize=13)
+    ax2.legend(loc='lower right', fontsize=9, framealpha=0.95)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.set_xlim(left=0)
+    ax2.set_ylim(bottom=0)
+
+    # Add subtle background gradient to emphasize saturation zone
+    if saturation_analysis.get('curve_fit'):
+        cf = saturation_analysis['curve_fit']
+        # Shade the "saturation zone" beyond 95% point
+        ax2.axvspan(cf['predicted_saturation_users'], 
+                cf['predicted_saturation_users'] * 1.5, 
+                alpha=0.1, color='red', zorder=1)
+        ax2.text(cf['predicted_saturation_users'] * 1.25, 
+                cf['T_max'] * 0.1, 
+                'Saturation\nZone', 
+                fontsize=11, fontweight='bold', color='red', 
+                alpha=0.4, ha='center', va='center',
+                bbox=dict(boxstyle='round', facecolor='red', alpha=0.1))
     
     # ═══════════════════════════════════════════════════════════════════════
     # PANEL 3: MFU Comparison (Top Right)
