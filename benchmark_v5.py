@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from collections import defaultdict
 
+
 try:
     import aiohttp
     import numpy as np
