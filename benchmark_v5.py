@@ -842,20 +842,42 @@ def plot_comprehensive_analysis(results: List['LoadTestResult'],
     # PANEL 7: Request Timeline (Bottom Left)
     # ═══════════════════════════════════════════════════════════════════════
     ax7 = fig.add_subplot(gs[2, 0])
-    
+
     for level, metrics in all_metrics.items():
         successful = [m for m in metrics if m.success]
         if not successful:
             continue
-        base_time = min(m.start_time for m in successful)
-        start_times = [(m.start_time - base_time) for m in successful]
-        tps_values = [m.tokens_per_sec for m in successful]
         
-        ax7.plot(start_times, tps_values, '-', alpha=0.7, linewidth=2, label=f'{level} users')
-    
+        # 1. Prepare and Sort Data
+        base_time = min(m.start_time for m in successful)
+        start_times = np.array([(m.start_time - base_time) for m in successful])
+        tps_values = np.array([m.tokens_per_sec for m in successful])
+        
+        # Sort by time to ensure the line draws correctly left-to-right
+        sorted_indices = np.argsort(start_times)
+        x_sorted = start_times[sorted_indices]
+        y_sorted = tps_values[sorted_indices]
+
+        # 2. Create a Smooth Trend Line (Polynomial Fit)
+        # Degree 3 (cubic) captures curves without being too wiggly. 
+        # Use degree 1 if you just want a straight line.
+        if len(x_sorted) > 3:
+            z = np.polyfit(x_sorted, y_sorted, 3) 
+            p = np.poly1d(z)
+            
+            # Create smooth x-axis points for the line
+            x_smooth = np.linspace(x_sorted.min(), x_sorted.max(), 100)
+            y_smooth = p(x_smooth)
+            
+            # Plot only the smooth trend line
+            ax7.plot(x_smooth, y_smooth, '-', linewidth=2.5, label=f'{level} users')
+        else:
+            # Fallback for very few data points: just plot them directly
+            ax7.plot(x_sorted, y_sorted, '-', linewidth=2, label=f'{level} users')
+
     ax7.set_xlabel('Test Duration (s)', fontweight='bold')
-    ax7.set_ylabel('Tokens/sec (per request)', fontweight='bold')
-    ax7.set_title('Throughput Stability', fontweight='bold', fontsize=12)
+    ax7.set_ylabel('Tokens/sec (Trend)', fontweight='bold')
+    ax7.set_title('Throughput Stability (Smoothed)', fontweight='bold', fontsize=12)
     ax7.legend()
     ax7.grid(True, alpha=0.3)
     
